@@ -4,42 +4,36 @@ import akka.actor.ActorSystem
 import akka.stream.ActorMaterializer
 import akka.stream.scaladsl.{Sink, Source}
 
-case class Event(name:String, image:String, event:String)
-object Event {
-  private def extract(line:String, before:String, after:String):Option[String] = {
-    if (line.contains(before) && line.contains(after)) {
-      Some(line.split(before).tail.head.split(after).head)
-    } else {
-      None
-    }
-  }
+import scala.concurrent.Await
 
-  def apply(line:String): Option[Event] = {
-    for {
-      name <- extract(line, "name=", ",")
-      image <- extract(line, "image=", ",")
-      event <- extract(line, "container ", " ")
-    } yield Event(name, image, event)
-  }
-}
+import scala.concurrent.duration._
 
-
-object Main extends App {
+object Main extends App with EventProtocol {
+  val command = "docker events".split(" ")
 
   implicit val system = ActorSystem("QuickStart")
   implicit val materializer = ActorMaterializer()
 
+  sys addShutdownHook {
+    Await.result(system.terminate(), 5.seconds)
+  }
+
+  val result = Map[String, Event]()
+
   val source = Source.empty
   val sink = Sink.foreach(println)
 
-  //val echoFlow = ShellCommandFlow("echo Hello World".split(" "))
-  val dockerEventsFlow = ShellCommandFlow("docker events".split(" "))
-
+  val dockerEventsFlow = ShellCommandFlow(command)
 
   source
-      .via(dockerEventsFlow)
-      .map(l => Event(l))
-      .to(sink)
-      .run()
-
+    .via(dockerEventsFlow).map(l => Event(l)).filter(_.isDefined).map(_.get)
+    .groupBy(20, _.name)
+    .fold(("", List.empty[String])) {
+      case ((_, list), event) =>
+        println(s"${(event.name, event.event :: list)}"); (event.name, event.event :: list)
+    }
+    .map(x => x) // send to ui?
+    .mergeSubstreams
+    .to(sink)
+    .run()
 }
